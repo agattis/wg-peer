@@ -22,10 +22,6 @@ SERVER_CONF_FILE="/etc/wireguard/wg0.conf"
 # This is the URL we'll use to return our external IP
 URL="http://checkip.amazonaws.com/"
 
-# We use curl, grep and qrecode in this script
-command -v curl >/dev/null 2>&1 || { printf >&2 "\nError: The curl utility is requred but could not be found in the path\n\n"; exit 1; } 
-command -v grep >/dev/null 2>&1 || { printf >&2 "\nError: The grep utility is requred but could not be found in the path\n\n"; exit 1; } 
-command -v qrencode >/dev/null 2>&1 || { printf >&2 "\nError: The qrencode utility is requred but could not be found in the path\n\n"; exit 1; } 
 
 # Print the usage if no parameters
 [ $# -eq 0 ] && { 
@@ -57,13 +53,17 @@ command -v qrencode >/dev/null 2>&1 || { printf >&2 "\nError: The qrencode utili
 	
 	Notes:
 
-	    Use the default 'wg-peer add my-laptop' in most cases to fully protect all your traffic. However, if the remote site has limited 
-	    capacity, you can specify the remote LAN address(es) to limit what traffic is sent over the VPN, for a split-tunnel.
+	    Use the default 'wg-peer add my-laptop' in most cases to fully protect all
+	    your traffic. However, if the remote site has limited capacity, you can 
+	    specify the remote LAN address(es) to limit what traffic is sent over the 
+	    VPN, for a split-tunnel.
 
 	EOF
 	exit 
 }
 
+# Script must have root 
+[ $(id -u) -eq 0 ] || { printf >&2 "\nError: This script requires root access. Please run as root or sudo\n\n"; exit 1; } 
 
 
 # Check that we have a command and a peer name
@@ -85,6 +85,10 @@ PEER_NAME=$2
 TUNNEL_MODE=$3
 TUNNEL_NETWORK_1=$4
 
+# We use curl, grep and qrecode in this script
+command -v curl >/dev/null 2>&1 || { printf >&2 "\nError: The curl utility is requred but could not be found in the path\n\n"; exit 1; } 
+command -v grep >/dev/null 2>&1 || { printf >&2 "\nError: The grep utility is requred but could not be found in the path\n\n"; exit 1; } 
+command -v qrencode >/dev/null 2>&1 || { printf >&2 "\nError: The qrencode utility is requred but could not be found in the path\n\n"; exit 1; } 
 
 # What is the server's external IP? We assume that port forwarding is set up correctly. 
 SERVER_EXTERNAL_IP=$(curl --silent $URL) 
@@ -114,7 +118,7 @@ while IFS= read -r LINE; do
 
 done < "$SERVER_CONF_FILE"
 
-# If we are out of IPs, exit saying so
+# Check to make sure we are not out of IPs - TODO change this to check the VPN netmask 
 [ $TOP_IP -gt 254 ] && { echo "Highet IP is $IP. Cannot go any higher"; exit 1; }
 
 DNS=$(grep nameserver /etc/resolv.conf) 	# Use the same DNS as the server so you can resolve internal hostnames
