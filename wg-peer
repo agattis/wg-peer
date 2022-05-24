@@ -12,6 +12,7 @@
 # - check if f an AllowedIP is a range...
 # - we should check that we don't run out of IPs based on a netmask 
 # - this will fail if the key = value doesn't have a space before the value as we look for the last space as a separator
+# - impliment a DDNS option
 
 
 
@@ -81,10 +82,11 @@ command -v qrencode >/dev/null 2>&1 || { printf >&2 "\nError: The qrencode utili
 
 COMMAND=$1
 PEER_NAME=$2
+TUNNEL_MODE=$3
+TUNNEL_NETWORK_1=$4
 
 
-# Can the server be reached and reach out? 
-
+# What is the server's external IP? We assume that port forwarding is set up correctly. 
 SERVER_EXTERNAL_IP=$(curl --silent $URL) 
 [ -z $SERVER_EXTERNAL_IP ] &&  { printf >&2 "\nError: Could not determine external IP\n\n"; exit 2; }
 
@@ -125,6 +127,18 @@ CLIENT_IP="$VPN_NETWORK.$(expr $TOP_IP + 1)" 	# Add one to the highest IP and ap
 
 ## Create the client config
 
+
+# Quick hack for split tunnel
+if [ -z $TUNNEL_MODE ]; then 
+	ALLOWEDIPS="0.0.0.0/0"
+else
+	ALLOWEDIPS="${VPN_NETWORK}.0/24"
+	if [ ! -z $TUNNEL_NETWORK_1 ]; then
+		echo Tunnel Network
+		ALLOWEDIPS="$ALLOWEDIPS,$TUNNEL_NETWORK_1"
+	fi	
+fi
+
 cat << EOF > $PEER_NAME-wg0.conf
 [Interface]
 PrivateKey = $CLIENT_PRI_KEY
@@ -133,11 +147,10 @@ DNS = $DNS
 
 [Peer]
 PublicKey = $SERVER_PUBLIC_KEY
-AllowedIPs = ${VPN_NETWORK}.0/24
+AllowedIPs = $ALLOWEDIPS
 Endpoint = $SERVER_EXTERNAL_IP:$PORT
 PersistentKeepalive = 20
 EOF
-
 
 
 # Add the peer to the end of the server's config file and load the new config
