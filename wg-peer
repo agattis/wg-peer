@@ -1,0 +1,159 @@
+#!/bin/sh
+#
+# wg-peer
+# 
+# Adds or removes a peer on this system and create a config snippit for that peer.
+#
+# When adding, the remote peer's config is displayed as a QR code in the terminal. Remote peer's VPN IP address is 
+# selected based on the highest address in this system's config.
+#
+# TODO 
+# - impliment delete
+# - check if f an AllowedIP is a range...
+# - we should check that we don't run out of IPs based on a netmask 
+# - this will fail if the key = value doesn't have a space before the value as we look for the last space as a separator
+
+
+
+# This is the usual spot for the Wireguard config file
+SERVER_CONF_FILE="/etc/wireguard/wg0.conf"
+
+# This is the URL we'll use to return our external IP
+URL="http://checkip.amazonaws.com/"
+
+# We use curl, grep and qrecode in this script
+command -v curl >/dev/null 2>&1 || { printf >&2 "\nError: The curl utility is requred but could not be found in the path\n\n"; exit 1; } 
+command -v grep >/dev/null 2>&1 || { printf >&2 "\nError: The grep utility is requred but could not be found in the path\n\n"; exit 1; } 
+command -v qrencode >/dev/null 2>&1 || { printf >&2 "\nError: The qrencode utility is requred but could not be found in the path\n\n"; exit 1; } 
+
+# Print the usage if no parameters
+[ $# -eq 0 ] && { 
+	cat <<- EOF
+
+	Usage: 	$0 { add | del } peername [ split ] ( network )
+
+	
+	Example:
+
+	    wg-peer add some_peer 
+	    wg-peer add some_other_peer split
+
+	
+	Details:
+
+	    wg-peer add some_peer		Adds a peer and configures it's snippit to 
+	    					send all traffic through the VPN
+
+	    wg-peer add some_peer split		Adds a peer and configures it's snippit to send 
+	        				ONLY traffic for VPN network range though the link
+
+	    wg-peer add some_peer split	192.168.10.0/24
+
+	   					Adds a peer and configures it's snippit to send 
+	        				traffic for VPN network and the specified networks
+	    					though the link
+
+	
+	Notes:
+
+	    Use the default 'wg-peer add my-laptop' in most cases to fully protect all your traffic. However, if the remote site has limited 
+	    capacity, you can specify the remote LAN address(es) to limit what traffic is sent over the VPN, for a split-tunnel.
+
+	EOF
+	exit 
+}
+
+
+
+# Check that we have a command and a peer name
+[ $1 != "add" ] || [ -z $2 ] && { \
+	cat <<- EOF
+
+	error: must specifiy a command 
+
+	usage:  
+	wg-peer add some_peer 
+	wg-peer del some_other_peer 
+	
+	EOF
+	exit 
+}
+
+COMMAND=$1
+PEER_NAME=$2
+
+
+# Can the server be reached and reach out? 
+
+SERVER_EXTERNAL_IP=$(curl --silent $URL) 
+[ -z $SERVER_EXTERNAL_IP ] &&  { printf >&2 "\nError: Could not determine external IP\n\n"; exit 2; }
+
+
+## Gather Info From The Server Config
+
+ADDRESS="";PRIVATE="";PORT="";IP=0;TOP_IP=0
+while IFS= read -r LINE; do
+
+	case "$LINE" in
+		*Address*) ADDRESS="${LINE##* }";;
+		*Private*) PRIVATE="${LINE##* }" ;;
+		*ListenPort*) PORT="${LINE##* }" ;;
+		*AllowedIPs*) IP="${LINE##* }" ;;
+	esac
+
+	# Keep track of the highest AllowdIP we see. There will be one per peer.
+	if [ $IP != 0 ]; then
+		IP=${IP%/*} 	# Remove the trailing netmask
+		HOST=${IP##*.}	# Remove the leading network prefix
+		[ $HOST -gt $TOP_IP ] && TOP_IP=$HOST
+		IP=0		# Reset the IP to 0 until we find another
+
+	fi
+
+done < "$SERVER_CONF_FILE"
+
+# If we are out of IPs, exit saying so
+[ $TOP_IP -gt 254 ] && { echo "Highet IP is $IP. Cannot go any higher"; exit 1; }
+
+DNS=$(grep nameserver /etc/resolv.conf) 	# Use the same DNS as the server so you can resolve internal hostnames
+DNS=${DNS##* }  
+SERVER_PUBLIC_KEY=$(echo $PRIVATE | wg pubkey)	
+CLIENT_PRI_KEY=$(wg genkey)
+CLIENT_PUB_KEY=$(echo $CLIENT_PRI_KEY | wg pubkey)
+VPN_NETWORK=${ADDRESS%.*}			# Drop the server's host number to leave the network prefix
+CLIENT_IP="$VPN_NETWORK.$(expr $TOP_IP + 1)" 	# Add one to the highest IP and append to the VPN network
+
+## Create the client config
+
+cat << EOF > $PEER_NAME-wg0.conf
+[Interface]
+PrivateKey = $CLIENT_PRI_KEY
+Address = $CLIENT_IP/32
+DNS = $DNS
+
+[Peer]
+PublicKey = $SERVER_PUBLIC_KEY
+AllowedIPs = ${VPN_NETWORK}.0/24
+Endpoint = $SERVER_EXTERNAL_IP:$PORT
+PersistentKeepalive = 20
+EOF
+
+
+
+# Add the peer to the end of the server's config file and load the new config
+
+cat << EOF >> "$SERVER_CONF_FILE"
+
+## $PEER_NAME ##
+[Peer]
+PublicKey = $CLIENT_PUB_KEY
+AllowedIPs = $CLIENT_IP/32
+EOF
+
+wg-quick down wg0 >/dev/null 2>&1 
+wg-quick up wg0 >/dev/null 2>&1 
+
+
+# Display the QR code
+
+qrencode -t ANSIUTF8 < $PEER_NAME-wg0.conf
